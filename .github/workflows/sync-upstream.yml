@@ -1,0 +1,55 @@
+name: Sync Upstream Release
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # 每6小时检查一次
+  workflow_dispatch:          # 支持手动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync upstream
+        run: |
+          git remote add upstream https://github.com/XrayR-project/XrayR.git || true
+          git fetch upstream
+          git checkout main
+          git merge upstream/main --no-edit
+          git push origin main
+
+      - name: Get latest release info
+        id: upstream_release
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/XrayR-project/XrayR/releases/latest)
+          echo "tag=$(echo $LATEST | jq -r .tag_name)" >> $GITHUB_OUTPUT
+          echo "body=$(echo $LATEST | jq -r .body)" >> $GITHUB_OUTPUT
+
+      - name: Download and re-release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=$(echo '${{ steps.upstream_release.outputs.tag }}')
+          
+          # 检查是否已存在该 Release
+          EXISTS=$(gh release view $TAG --repo zona-165/XrayR 2>/dev/null && echo "yes" || echo "no")
+          if [ "$EXISTS" = "yes" ]; then
+            echo "Release $TAG already exists, skipping."
+            exit 0
+          fi
+          
+          # 下载上游所有资产
+          mkdir -p assets
+          curl -s https://api.github.com/repos/XrayR-project/XrayR/releases/latest \
+            | jq -r '.assets[].browser_download_url' \
+            | xargs -I {} wget -P assets {}
+          
+          # 创建新 Release 并上传
+          gh release create $TAG assets/* \
+            --repo zona-165/XrayR \
+            --title "$TAG" \
+            --notes "${{ steps.upstream_release.outputs.body }}"
